@@ -1,0 +1,6 @@
+{
+  "name": "Black Sea Company",
+  "description": "Black Sea Company Scenario Builder and narrative development manager.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
