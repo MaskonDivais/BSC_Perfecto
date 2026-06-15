@@ -14,6 +14,11 @@ export interface NodeField {
   mediaValue?: MediaFile[];
 }
 
+export interface ChoiceVariation {
+  id: string;
+  text: string;
+}
+
 export interface StoryNode {
   id: string;
   title: string;
@@ -29,6 +34,8 @@ export interface StoryNode {
   lineThickness?: number; 
   lineDashed?: boolean; 
   fields?: NodeField[]; 
+  nodeType?: 'start' | 'end' | 'variation' | 'description';
+  variations?: ChoiceVariation[];
 }
 
 export interface Connection {
@@ -36,6 +43,9 @@ export interface Connection {
   fromId: string;
   toId: string;
   color?: string; 
+  thickness?: number;
+  style?: 'solid' | 'dashed' | 'dotted';
+  fromChoiceId?: string;
 }
 
 export interface Group {

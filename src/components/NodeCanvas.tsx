@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { StoryNode, Connection, MediaFile, Group } from '../types';
-import StoryNodeComponent from './StoryNode';
+import StoryNodeComponent, { getNodeHeight } from './StoryNode';
 import { 
   Plus, 
   RotateCcw, 
@@ -39,6 +39,10 @@ interface NodeCanvasProps {
   groups: Group[];
   setGroups: React.Dispatch<React.SetStateAction<Group[]>>;
   theme: 'classic' | 'cosmic';
+  autosaveEnabled: boolean;
+  autosaveInterval: number;
+  onSaveProject: () => void;
+  onInspectNode?: (nodeId: string) => void;
 }
 
 export default function NodeCanvas({
@@ -49,6 +53,10 @@ export default function NodeCanvas({
   groups = [],
   setGroups,
   theme = 'classic',
+  autosaveEnabled,
+  autosaveInterval,
+  onSaveProject,
+  onInspectNode,
 }: NodeCanvasProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [panOffset, setPanOffset] = useState({ x: 100, y: 100 });
@@ -64,6 +72,15 @@ export default function NodeCanvas({
 
   const [showSettings, setShowSettings] = useState<boolean>(false);
 
+  const [verticalGap, setVerticalGap] = useState<number>(() => {
+    const saved = localStorage.getItem('story_canvas_vertical_gap');
+    return saved !== null ? parseInt(saved, 10) : 400;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('story_canvas_vertical_gap', String(verticalGap));
+  }, [verticalGap]);
+
   const [spawnConfirm, setSpawnConfirm] = useState<{ fromId: string } | null>(null);
 
   const [moveMode, setMoveMode] = useState(false);
@@ -72,6 +89,7 @@ export default function NodeCanvas({
 
   const [hoveredConnectionId, setHoveredConnectionId] = useState<string | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  const [activeConnectionSettingsId, setActiveConnectionSettingsId] = useState<string | null>(null);
 
   const [touchStartDist, setTouchStartDist] = useState<number | null>(null);
   const [touchStartZoom, setTouchStartZoom] = useState<number>(1);
@@ -81,6 +99,7 @@ export default function NodeCanvas({
 
   const [activeDrag, setActiveDrag] = useState<{
     fromId: string;
+    fromChoiceId?: string | null;
     startX: number;
     startY: number;
     currentX: number;
@@ -103,6 +122,42 @@ export default function NodeCanvas({
   const NODE_WIDTH = 288;
   const NODE_APPROX_HEIGHT = 270;
   const SOCKET_Y_OFFSET = NODE_APPROX_HEIGHT / 2;
+
+  const getNodeSocketPosition = (node: StoryNode, choiceId?: string | null) => {
+    const hasImage = node.media && node.media.length > 0;
+    const imageSectionHeight = hasImage ? 110 : 70;
+    
+    // Width of the card is fixed 288
+    const x = node.x + 288;
+    const borderThickness = node.borderThickness !== undefined ? node.borderThickness : 2;
+    
+    if (!choiceId || !node.variations || node.variations.length === 0) {
+      // Single default socket centered on the right edge of the card
+      const cardHeight = getNodeHeight(node);
+      return { x, y: node.y + cardHeight / 2 };
+    } else {
+      const choiceIndex = node.variations.findIndex((v) => v.id === choiceId);
+      if (choiceIndex === -1) {
+        // fallback
+        const cardHeight = getNodeHeight(node);
+        return { x, y: node.y + cardHeight / 2 };
+      } else {
+        // Preceding space calculations (same as in StoryNode):
+        // Header: 42px
+        // Type Header: 34px
+        // Border: borderThickness
+        // Top padding: 12px
+        // Image Section: imageSectionHeight
+        // spacing: 12px (mt-3 before Dialogue)
+        // Dialogue: h-[112px]
+        // spacing: 12px (mt-3 before Variations label)
+        // Variations label: h-6 (24px)
+        const precedingHeight = 42 + 34 + borderThickness + 12 + imageSectionHeight + 12 + 112 + 12 + 24;
+        const y = node.y + precedingHeight + (choiceIndex * 42) + 18;
+        return { x, y };
+      }
+    }
+  };
 
   const [showHelp, setShowHelp] = useState(false);
 
@@ -205,6 +260,8 @@ export default function NodeCanvas({
   const [nodeToDeleteId, setNodeToDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!autosaveEnabled) return;
+
     const timer = setInterval(() => {
       let filesSaved = false;
       setNodes((prevNodes) => {
@@ -217,14 +274,56 @@ export default function NodeCanvas({
       });
 
       if (filesSaved) {
+        if (onSaveProject) {
+          onSaveProject();
+        }
         setShowAutosaveToast(true);
         const hideTimer = setTimeout(() => setShowAutosaveToast(false), 3000);
         return () => clearTimeout(hideTimer);
       }
-    }, 60000);
+    }, autosaveInterval * 60000);
 
     return () => clearInterval(timer);
-  }, [nodes]);
+  }, [nodes, autosaveEnabled, autosaveInterval, onSaveProject]);
+
+  // Live Check & Real-time Node Typing Alignment based on Connection Sources
+  useEffect(() => {
+    let changed = false;
+    const updatedNodes = nodes.map((node) => {
+      // Start and End nodes are strictly reserved
+      if (node.nodeType === 'start' || node.nodeType === 'end') {
+        return node;
+      }
+
+      // Check if there is any active incoming connection from a choice/route point
+      const hasVariationInput = connections.some(
+        (c) => c.toId === node.id && c.fromChoiceId
+      );
+
+      const targetType = hasVariationInput ? 'variation' : 'description';
+      const targetColor = targetType === 'variation' ? '#f97316' : '#3b82f6';
+
+      if (
+        node.nodeType !== targetType ||
+        node.borderColor !== targetColor ||
+        node.lineColor !== targetColor
+      ) {
+        changed = true;
+        return {
+          ...node,
+          nodeType: targetType,
+          borderColor: targetColor,
+          lineColor: targetColor,
+          isSaved: false,
+        };
+      }
+      return node;
+    });
+
+    if (changed) {
+      setNodes(updatedNodes);
+    }
+  }, [connections, nodes, setNodes]);
 
   const handleAutoLayout = () => {
     if (nodes.length === 0) return;
@@ -306,7 +405,7 @@ export default function NodeCanvas({
     });
 
     const HORIZONTAL_GAP = 360;
-    const VERTICAL_GAP = 300;
+    const VERTICAL_GAP = verticalGap;
     const START_X = 150;
     const CENTER_Y = 320;
 
@@ -334,33 +433,46 @@ export default function NodeCanvas({
     );
   };
 
-  const handleAddNewNode = (x: number, y: number, connectedFromId?: string) => {
+  const handleAddNewNode = (x: number, y: number, connectedFromId?: string, connectedFromChoiceId?: string | null) => {
     saveToPast();
     const newId = `node_${Math.random().toString(36).substring(2, 7)}`;
     const count = nodes.length + 1;
 
-    let bColor = globalBorderColor;
-    let lColor = globalLineColor;
+    let bColor = '#3b82f6'; // Default to description blue
+    let lColor = '#3b82f6'; // Default to description blue
     let bThickness = globalBorderThickness;
     let lThickness = globalLineThickness;
     let lDashed = globalLineDashed;
+    let nType: 'start' | 'end' | 'variation' | 'description' = 'description';
+
+    if (nodes.length === 0) {
+      bColor = '#10b981'; // Green
+      lColor = '#10b981'; // Green
+      nType = 'start';
+    } else if (connectedFromChoiceId) {
+      bColor = '#f97316'; // Orange
+      lColor = '#f97316'; // Orange
+      nType = 'variation';
+    } else if (connectedFromId) {
+      bColor = '#3b82f6'; // Blue
+      lColor = '#3b82f6'; // Blue
+      nType = 'description';
+    }
 
     if (connectedFromId) {
       const parentNode = nodes.find((p) => p.id === connectedFromId);
       if (parentNode) {
-        bColor = parentNode.borderColor || parentNode.lineColor || globalBorderColor;
-        lColor = parentNode.lineColor || globalLineColor;
         bThickness = parentNode.borderThickness !== undefined ? parentNode.borderThickness : globalBorderThickness;
         lThickness = parentNode.lineThickness !== undefined ? parentNode.lineThickness : globalLineThickness;
         lDashed = parentNode.lineDashed !== undefined ? parentNode.lineDashed : globalLineDashed;
-        
-        setGlobalBorderColor(bColor);
-        setGlobalLineColor(lColor);
-        setGlobalBorderThickness(bThickness);
-        setGlobalLineThickness(lThickness);
-        setGlobalLineDashed(lDashed);
       }
     }
+
+    setGlobalBorderColor(bColor);
+    setGlobalLineColor(lColor);
+    setGlobalBorderThickness(bThickness);
+    setGlobalLineThickness(lThickness);
+    setGlobalLineDashed(lDashed);
 
     const newNode: StoryNode = {
       id: newId,
@@ -368,7 +480,8 @@ export default function NodeCanvas({
       x: x,
       y: y,
       script: '',
-      tag: 'dialogue',
+      nodeType: nType,
+      tag: nType,
       media: [],
       isSaved: false,
       borderColor: bColor,
@@ -386,6 +499,7 @@ export default function NodeCanvas({
         fromId: connectedFromId,
         toId: newId,
         color: lColor,
+        fromChoiceId: connectedFromChoiceId || undefined,
       };
       setConnections((prev) => [...prev, newConnection]);
     }
@@ -648,7 +762,7 @@ export default function NodeCanvas({
 
       if (hoverNode && hoverNode.id !== activeDrag.fromId) {
         const connectionExists = connections.some(
-          (c) => c.fromId === activeDrag.fromId && c.toId === hoverNode.id
+          (c) => c.fromId === activeDrag.fromId && c.fromChoiceId === activeDrag.fromChoiceId && c.toId === hoverNode.id
         );
 
         if (!connectionExists) {
@@ -656,12 +770,30 @@ export default function NodeCanvas({
             id: `conn_${Math.random().toString(36).substring(2, 7)}`,
             fromId: activeDrag.fromId,
             toId: hoverNode.id,
+            fromChoiceId: activeDrag.fromChoiceId || undefined,
           };
           saveToPast();
           setConnections((prev) => [...prev, newConnection]);
+
+          // Automatically align target node's type based on connection source
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id === hoverNode.id && n.nodeType !== 'start' && n.nodeType !== 'end') {
+                const targetType = activeDrag.fromChoiceId ? 'variation' : 'description';
+                const colorHex = targetType === 'variation' ? '#f97316' : '#3b82f6';
+                return {
+                  ...n,
+                  nodeType: targetType,
+                  borderColor: colorHex,
+                  lineColor: colorHex,
+                };
+              }
+              return n;
+            })
+          );
         }
       } else {
-        handleAddNewNode(activeDrag.currentX - NODE_WIDTH / 2, activeDrag.currentY - 135, activeDrag.fromId);
+        handleAddNewNode(activeDrag.currentX - NODE_WIDTH / 2, activeDrag.currentY - 135, activeDrag.fromId, activeDrag.fromChoiceId);
       }
       setActiveDrag(null);
     }
@@ -767,19 +899,37 @@ export default function NodeCanvas({
 
       if (hoverNode && hoverNode.id !== activeDrag.fromId) {
         const connectionExists = connections.some(
-          (c) => c.fromId === activeDrag.fromId && c.toId === hoverNode.id
+          (c) => c.fromId === activeDrag.fromId && c.fromChoiceId === activeDrag.fromChoiceId && c.toId === hoverNode.id
         );
         if (!connectionExists) {
           const newConnection: Connection = {
             id: `conn_${Math.random().toString(36).substring(2, 7)}`,
             fromId: activeDrag.fromId,
             toId: hoverNode.id,
+            fromChoiceId: activeDrag.fromChoiceId || undefined,
           };
           saveToPast();
           setConnections((prev) => [...prev, newConnection]);
+
+          // Automatically align target node's type based on connection source
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id === hoverNode.id && n.nodeType !== 'start' && n.nodeType !== 'end') {
+                const targetType = activeDrag.fromChoiceId ? 'variation' : 'description';
+                const colorHex = targetType === 'variation' ? '#f97316' : '#3b82f6';
+                return {
+                  ...n,
+                  nodeType: targetType,
+                  borderColor: colorHex,
+                  lineColor: colorHex,
+                };
+              }
+              return n;
+            })
+          );
         }
       } else {
-        handleAddNewNode(activeDrag.currentX - NODE_WIDTH / 2, activeDrag.currentY - 135, activeDrag.fromId);
+        handleAddNewNode(activeDrag.currentX - NODE_WIDTH / 2, activeDrag.currentY - 135, activeDrag.fromId, activeDrag.fromChoiceId);
       }
       setActiveDrag(null);
     }
@@ -849,12 +999,73 @@ export default function NodeCanvas({
     setNodeToDeleteId(id);
   };
 
-  const handleStartConnectionDrag = (fromNodeId: string, e: React.MouseEvent | React.TouchEvent) => {
+  const handleAddChoiceAutoBranch = (fromNodeId: string, choiceId: string, choiceText: string, choiceIndex: number) => {
+    saveToPast();
+    const fromNode = nodes.find((n) => n.id === fromNodeId);
+    if (!fromNode) return;
+
+    const newId = `node_${Math.random().toString(36).substring(2, 7)}`;
+    
+    // Find already existing outgoing connected child nodes from this node to prevent overlaps and avoid shifting existing blocks
+    const childConnections = connections.filter((c) => c.fromId === fromNodeId);
+    const childNodes = childConnections
+      .map((c) => nodes.find((n) => n.id === c.toId))
+      .filter((n): n is StoryNode => n !== undefined);
+
+    const targetX = fromNode.x + 380;
+    let targetY = fromNode.y;
+    
+    if (childNodes.length > 0) {
+      // Pick the lowest Y coordinate among the existing child nodes and add verticalGap
+      const lowestY = Math.max(...childNodes.map((n) => n.y));
+      targetY = lowestY + verticalGap;
+    } else {
+      // If it's the very first child node, let's start at the parent's level as the starting baseline
+      targetY = fromNode.y;
+    }
+
+    const bColor = '#f97316'; // Orange
+    const lColor = '#f97316'; // Orange
+    const bThickness = fromNode.borderThickness !== undefined ? fromNode.borderThickness : globalBorderThickness;
+    const lThickness = fromNode.lineThickness !== undefined ? fromNode.lineThickness : globalLineThickness;
+    const lDashed = fromNode.lineDashed !== undefined ? fromNode.lineDashed : globalLineDashed;
+
+    const newNode: StoryNode = {
+      id: newId,
+      title: `${fromNode.title ? fromNode.title + ' → ' : ''}${choiceText}`,
+      x: targetX,
+      y: targetY,
+      script: '',
+      nodeType: 'variation',
+      tag: 'variation',
+      media: [],
+      isSaved: false,
+      borderColor: bColor,
+      lineColor: lColor,
+      borderThickness: bThickness,
+      lineThickness: lThickness,
+      lineDashed: lDashed,
+    };
+
+    setNodes((prev) => [...prev, newNode]);
+
+    const newConnection: Connection = {
+      id: `conn_${Math.random().toString(36).substring(2, 7)}`,
+      fromId: fromNodeId,
+      toId: newId,
+      fromChoiceId: choiceId,
+      color: lColor,
+    };
+    setConnections((prev) => [...prev, newConnection]);
+  };
+
+  const handleStartConnectionDrag = (fromNodeId: string, choiceId: string | null = null, e: React.MouseEvent | React.TouchEvent) => {
     const node = nodes.find((n) => n.id === fromNodeId);
     if (!node) return;
 
-    const startX = node.x + NODE_WIDTH;
-    const startY = node.y + SOCKET_Y_OFFSET;
+    const pos = getNodeSocketPosition(node, choiceId);
+    const startX = pos.x;
+    const startY = pos.y;
 
     const coords = getClientCoords(e);
     setDragStartTime(Date.now());
@@ -862,6 +1073,7 @@ export default function NodeCanvas({
 
     setActiveDrag({
       fromId: fromNodeId,
+      fromChoiceId: choiceId,
       startX,
       startY,
       currentX: startX,
@@ -976,11 +1188,11 @@ export default function NodeCanvas({
   }, []);
 
   const getMarkerId = (colorHex?: string) => {
-    if (colorHex === '#ea580c') return 'arrow-orange';
+    if (colorHex === '#ea580c' || colorHex === '#f97316') return 'arrow-orange';
     if (colorHex === '#8b5cf6') return 'arrow-purple';
-    if (colorHex === '#0284c7') return 'arrow-blue';
+    if (colorHex === '#0284c7' || colorHex === '#3b82f6') return 'arrow-blue';
     if (colorHex === '#d97706') return 'arrow-yellow';
-    if (colorHex === '#dc2626') return 'arrow-red';
+    if (colorHex === '#dc2626' || colorHex === '#ef4444') return 'arrow-red';
     if (colorHex === '#64748b') return 'arrow-slate';
     return 'arrow-emerald';
   };
@@ -988,6 +1200,13 @@ export default function NodeCanvas({
   const handleDeleteConnection = (connId: string) => {
     saveToPast();
     setConnections((prev) => prev.filter((c) => c.id !== connId));
+  };
+
+  const handleUpdateConnection = (connId: string, updates: Partial<Connection>) => {
+    saveToPast();
+    setConnections((prev) =>
+      prev.map((c) => (c.id === connId ? { ...c, ...updates } : c))
+    );
   };
 
   const handleDownloadStructuredZip = (nodeToDl: StoryNode) => {
@@ -1467,17 +1686,50 @@ export default function NodeCanvas({
 
               if (!fromNode || !toNode) return null;
 
-              const x1 = fromNode.x + NODE_WIDTH;
-              const y1 = fromNode.y + SOCKET_Y_OFFSET;
+              const pos1 = getNodeSocketPosition(fromNode, conn.fromChoiceId);
+              const x1 = pos1.x;
+              const y1 = pos1.y;
+              
               const x2 = toNode.x;
-              const y2 = toNode.y + SOCKET_Y_OFFSET;
+              const y2 = toNode.y + getNodeHeight(toNode) / 2;
 
               const pathString = getCurvePath(x1, y1, x2, y2);
               const isHovered = hoveredConnectionId === conn.id;
               const isSelected = selectedConnectionId === conn.id;
 
-              const connColor = fromNode.lineColor || conn.color || '#10b981';
+              let connColor = '#3b82f6'; // Default to description blue
+              const fromType = fromNode.nodeType || 'description';
+              const toType = toNode.nodeType || 'description';
+
+              if (fromType === 'start') {
+                connColor = '#10b981';
+              } else {
+                const nodeTypeColors: Record<string, string> = {
+                  start: '#10b981',
+                  end: '#ef4444',
+                  variation: '#f97316',
+                  description: '#3b82f6'
+                };
+                connColor = nodeTypeColors[toType] || '#3b82f6';
+              }
               const markerId = getMarkerId(connColor);
+
+              const baseThickness = conn.thickness !== undefined 
+                ? conn.thickness 
+                : (fromNode.lineThickness !== undefined ? fromNode.lineThickness : globalLineThickness);
+              const connThickness = isHovered || isSelected ? (baseThickness + 1.5) : baseThickness;
+
+              let connDashArray: string | undefined = undefined;
+              if (conn.style === 'dashed') {
+                connDashArray = "6 4";
+              } else if (conn.style === 'dotted') {
+                connDashArray = "2 3";
+              } else if (conn.style === 'solid') {
+                connDashArray = undefined;
+              } else {
+                const isDashed = fromNode.lineDashed !== undefined ? fromNode.lineDashed : globalLineDashed;
+                connDashArray = isDashed ? "6 4" : undefined;
+              }
 
               return (
                 <g 
@@ -1501,8 +1753,8 @@ export default function NodeCanvas({
                     d={pathString}
                     fill="none"
                     stroke={isHovered || isSelected ? '#ffffff' : connColor}
-                    strokeWidth={isHovered || isSelected ? ((fromNode.lineThickness !== undefined ? fromNode.lineThickness : 2.5) + 1.5) : (fromNode.lineThickness !== undefined ? fromNode.lineThickness : 2.5)}
-                    strokeDasharray={fromNode.lineDashed ? "6 4" : undefined}
+                    strokeWidth={connThickness}
+                    strokeDasharray={connDashArray}
                     markerEnd={isHovered || isSelected ? 'url(#arrow-selected)' : `url(#${markerId})`}
                     className="transition-all duration-150"
                     onClick={(e) => {
@@ -1512,26 +1764,38 @@ export default function NodeCanvas({
                   />
 
                   <foreignObject
-                    x={(x1 + x2) / 2 - 46}
-                    y={(y1 + y2) / 2 - 14}
-                    width="100"
-                    height="32"
+                    x={(x1 + x2) / 2 - 60}
+                    y={(y1 + y2) / 2 - 34}
+                    width="120"
+                    height="68"
                     className={`transition-all duration-150 ${
                       isHovered || isSelected ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'
                     }`}
                   >
-                    <button
-                      id={`btn-delete-conn-${conn.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteConnection(conn.id);
-                        setSelectedConnectionId(null);
-                        setHoveredConnectionId(null);
-                      }}
-                      className="h-7 px-2.5 rounded bg-red-650 hover:bg-red-600 border border-red-500 text-white font-mono text-[9px] font-bold flex items-center justify-center gap-1 shadow-xl select-all select-none cursor-pointer"
-                    >
-                      <Trash2 className="w-2.5 h-2.5" /> SEVER LINK
-                    </button>
+                    <div className="flex flex-col gap-1 items-center justify-center pointer-events-auto">
+                      <button
+                        title="Configure line styling"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveConnectionSettingsId(conn.id);
+                        }}
+                        className="h-[30px] w-[110px] bg-[#111422]/95 hover:bg-blue-600/95 text-slate-300 hover:text-white border border-[#2a3454] rounded-lg text-[9px] font-mono font-bold uppercase tracking-wider flex items-center justify-center gap-1 shadow-lg cursor-pointer transition-all duration-100 active:scale-95"
+                      >
+                        <Settings className="w-3 h-3 animate-spin duration-[4000ms]" /> SETTINGS
+                      </button>
+                      <button
+                        id={`btn-delete-conn-${conn.id}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteConnection(conn.id);
+                          setSelectedConnectionId(null);
+                          setHoveredConnectionId(null);
+                        }}
+                        className="h-[30px] w-[110px] bg-[#1a0f12]/95 hover:bg-red-650 text-red-400 hover:text-white border border-red-500 rounded-lg text-[9px] font-mono font-bold uppercase tracking-wider flex items-center justify-center gap-1 shadow-lg cursor-pointer transition-all duration-100 active:scale-95"
+                      >
+                        <Trash2 className="w-3 h-3" /> DELETE LINES
+                      </button>
+                    </div>
                   </foreignObject>
                 </g>
               );
@@ -1541,10 +1805,20 @@ export default function NodeCanvas({
               <path
                 d={getCurvePath(activeDrag.startX, activeDrag.startY, activeDrag.currentX, activeDrag.currentY)}
                 fill="none"
-                stroke={globalLineColor || '#38bdf8'}
+                stroke={(() => {
+                  if (activeDrag.fromChoiceId) return '#f97316';
+                  const fromNode = nodes.find((n) => n.id === activeDrag.fromId);
+                  if (fromNode?.nodeType === 'start') return '#10b981';
+                  return '#3b82f6';
+                })()}
                 strokeWidth={globalLineThickness !== undefined ? globalLineThickness : 2.5}
                 strokeDasharray={globalLineDashed ? "6 4" : undefined}
-                markerEnd="url(#arrow-selected)"
+                markerEnd={`url(#arrow-${(() => {
+                  if (activeDrag.fromChoiceId) return 'orange';
+                  const fromNode = nodes.find((n) => n.id === activeDrag.fromId);
+                  if (fromNode?.nodeType === 'start') return 'emerald';
+                  return 'blue';
+                })()})`}
               />
             )}
           </svg>
@@ -1592,8 +1866,13 @@ export default function NodeCanvas({
                 onOpenDirectory={setOpenDirNode}
                 onStartConnection={handleStartConnectionDrag}
                 onDelete={handleDeleteNode}
+                onAddChoice={handleAddChoiceAutoBranch}
                 moveMode={moveMode}
                 theme={theme}
+                onInspectNode={onInspectNode}
+                isSingle={nodes.length === 1}
+                nodes={nodes}
+                connections={connections}
               />
             </div>
           ))}
@@ -1920,11 +2199,37 @@ export default function NodeCanvas({
           </div>
 
           <div className="flex-1 p-5 overflow-y-auto space-y-6 text-slate-300">
-            <div className="bg-[#141829] rounded-xl border border-slate-800/80 p-3.5 space-y-1.5">
-              <h5 className="text-[11px] font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-blue-400" /> Color Propagation Mode
+            {/* Adjustable Vertical Spacing Setting */}
+            <div className="bg-[#141829] rounded-xl border border-blue-500/25 p-3.5 space-y-2.5 shadow-lg">
+              <h5 className="text-[11px] font-bold text-slate-200 uppercase tracking-wide flex items-center justify-between font-mono">
+                <span className="flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5 text-blue-400" /> Vertical Auto-Offset</span>
+                <span className="text-cyan-400 font-extrabold font-mono text-xs">{verticalGap}px</span>
               </h5>
               <p className="text-[10px] text-slate-400 leading-relaxed font-sans">
+                Set the vertical spacing between branching options and during auto-layout arrangement to guarantee clear visual alignment.
+              </p>
+              <input
+                id="vertical-spacing-slider"
+                type="range"
+                min="180"
+                max="600"
+                step="10"
+                value={verticalGap}
+                onChange={(e) => setVerticalGap(parseInt(e.target.value, 10))}
+                className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400 mt-2"
+              />
+              <div className="flex justify-between text-[8px] font-mono text-slate-500 mt-1">
+                <span>180px (Compact)</span>
+                <span>Default (400px)</span>
+                <span>600px (Separated)</span>
+              </div>
+            </div>
+
+            <div className="bg-[#141829] rounded-xl border border-slate-800/80 p-3.5 space-y-1.5">
+              <h5 className="text-[11px] font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1">
+                <Sparkles className="w-3.5 h-3.5 text-blue-400" /> Color Propagation Mode (Colorprop auto mode)
+              </h5>
+              <p className="text-[10px] text-slate-400 leading-relaxed font-sans font-medium">
                 Subsequent blocks and connection lines will propagate with these selected border and line template colors.
               </p>
             </div>
@@ -2193,7 +2498,87 @@ export default function NodeCanvas({
             </div>
           </div>
         </div>
-      )}
+      )}      {activeConnectionSettingsId && (() => {
+        const targetConn = connections.find(c => c.id === activeConnectionSettingsId);
+        if (!targetConn) return null;
+        
+        const fromNode = nodes.find(n => n.id === targetConn.fromId);
+        const toNode = nodes.find(n => n.id === targetConn.toId);
+        const sourceLabel = fromNode ? fromNode.title : 'Block';
+        const targetLabel = toNode ? toNode.title : 'Block';
+        
+        const selectedColor = targetConn.color || (fromNode?.lineColor) || globalLineColor || '#10b981';
+        const selectedThickness = targetConn.thickness !== undefined 
+          ? targetConn.thickness 
+          : (fromNode?.lineThickness !== undefined ? fromNode.lineThickness : globalLineThickness);
+        const selectedStyle = targetConn.style || (fromNode?.lineDashed ? 'dashed' : (globalLineDashed ? 'dashed' : 'solid'));
+
+        return (
+          <div 
+            id="connection-settings-modal" 
+            className="absolute inset-0 z-50 flex items-center justify-center bg-[#05060a]/80 backdrop-blur-md p-4 animate-fade-in pointer-events-auto font-sans text-xs"
+            onClick={() => setActiveConnectionSettingsId(null)}
+          >
+            <div 
+              className="bg-[#121522] border border-[#21283d] rounded-2xl max-w-sm w-full p-5 shadow-2xl relative space-y-4 animate-scale-up"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-[#1f253d] pb-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="p-1 px-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400">
+                    <Settings className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-xs text-slate-100 uppercase tracking-wide">Line Customization</h4>
+                    <p className="text-[9px] text-slate-500 font-mono uppercase tracking-widest">{sourceLabel} ➔ {targetLabel}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setActiveConnectionSettingsId(null)}
+                  className="w-5 h-5 rounded-full bg-[#1b2135] hover:bg-red-500/10 hover:text-red-400 transition-colors text-xs flex items-center justify-center text-slate-400 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Line Style */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-mono font-bold text-slate-400 select-none uppercase-none">LINE STYLE:</span>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {[
+                    { id: 'solid', label: 'Solid' },
+                    { id: 'dashed', label: 'Dashed' },
+                    { id: 'dotted', label: 'Dotted' }
+                  ].map((styleOption) => (
+                    <button
+                      key={styleOption.id}
+                      onClick={() => handleUpdateConnection(activeConnectionSettingsId, { style: styleOption.id as any })}
+                      className={`py-1.5 rounded-lg text-[10px] font-mono transition-all border font-bold cursor-pointer text-center ${
+                        selectedStyle === styleOption.id
+                          ? 'bg-blue-600/15 border-blue-500 text-blue-400 shadow-sm'
+                          : 'bg-[#090b11] border-[#1d2338] text-slate-400 hover:bg-[#111422] hover:text-slate-300'
+                      }`}
+                    >
+                      {styleOption.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Action */}
+              <div className="pt-2 border-t border-[#1f253d] flex justify-end">
+                <button
+                  onClick={() => setActiveConnectionSettingsId(null)}
+                  className="px-4 py-1.5 bg-[#1b2135] hover:bg-[#232a42] text-slate-200 hover:text-white rounded-lg text-[10px] font-mono font-bold uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {showDrawer && (
         <>
