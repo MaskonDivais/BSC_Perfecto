@@ -1,5 +1,14 @@
 # Black Sea Company Scenario Builder
 
+## ⚠️ License and Copyright
+
+This project is the intellectual property of the author. The source code is open strictly for evaluation, learning, and non-commercial use.
+
+* Commercial use (including corporate use, paid products, and advertising) is strictly PROHIBITED.
+* Attribution is REQUIRED: Any copy or modification of this code must include the original author's name and a link back to this repository.
+
+For commercial licensing inquiries or permissions, please contact the author via: doroshkevichgraf@gmail.com
+
 An advanced, offline-first narrative development workstation and node-based scenario builder. Tailored for organizing story cells, layout graphs, dialog sequences, and logic nodes within a high-performance visual diagram.
 
 ---
